@@ -1,0 +1,4 @@
+# Always use LF line endings, so the bash scripts work on Linux even if the repo was cloned on Windows.
+* text=auto eol=lf
+*.png binary
+*.ico binary
