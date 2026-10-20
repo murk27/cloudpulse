@@ -8,3 +8,4 @@ samconfig.toml
 !.env.example
 *.log
 coverage/
+.claude/

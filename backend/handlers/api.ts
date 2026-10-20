@@ -107,8 +107,9 @@ async function statusPage(): Promise<ApiResponse> {
     generatedAt: today.toISOString(),
     monitors: rows,
   };
-  // "public, max-age=60" tells CloudFront (and browsers) they may reuse this for 60 seconds.
-  return json(200, body, { "cache-control": "public, max-age=60" });
+  // s-maxage=60: shared caches (CloudFront) may reuse this response for 60 seconds.
+  // max-age=0:   browsers must not, so every page load really asks CloudFront (HIT/MISS demo).
+  return json(200, body, { "cache-control": "public, max-age=0, s-maxage=60" });
 }
 
 export function overallStatus(monitors: Pick<Monitor, "status">[]): OverallStatus {

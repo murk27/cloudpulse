@@ -246,7 +246,7 @@ Resources:
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # Managed-CachingOptimized
         CacheBehaviors:
           # Public status data: cached at the edge for the 60 s the Lambda allows
-          # (Cache-Control: max-age=60), so most visitors never reach Lambda or DynamoDB.
+          # (Cache-Control: s-maxage=60), so most visitors never reach Lambda or DynamoDB.
           - PathPattern: /api/status
             TargetOriginId: api
             ViewerProtocolPolicy: redirect-to-https

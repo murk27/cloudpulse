@@ -13,6 +13,8 @@ export default defineConfig({
   build: {
     outDir: "../dist/web",
     emptyOutDir: true,
+    // Recharts makes the bundle ~650 kB (~195 kB gzipped). That's fine for this app.
+    chunkSizeWarningLimit: 800,
   },
   server: {
     port: 5173,

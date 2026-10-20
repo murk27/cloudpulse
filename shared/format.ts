@@ -9,14 +9,14 @@ export function formatDuration(ms: number): string {
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
   if (hours > 0) return `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  if (minutes > 0) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
   return `${seconds}s`;
 }
 
 /** Formats an uptime percentage like "99.86%" (or an em dash when there is no data). */
 export function formatUptime(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
-  return `${value.toFixed(value === 100 ? 0 : 2)}%`;
+  return `${value.toFixed(value === 100 || value === 0 ? 0 : 2)}%`;
 }
 
 /** Formats a latency like "123 ms" (or an em dash when there is no data). */

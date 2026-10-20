@@ -55,7 +55,7 @@ export function expiresAfterDays(days: number, from: number = Date.now()): numbe
 
 /** Removes the storage-only fields (PK, SK, expiresAt) before an item is returned to callers. */
 function strip<T>(item: Record<string, unknown>): T {
-  const { PK: _pk, SK: _sk, expiresAt: _exp, ...rest } = item;
+  const { PK, SK, expiresAt, ...rest } = item;
   return rest as T;
 }
 

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="CloudPulse - serverless uptime monitoring on AWS" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>CloudPulse</title>
+    <script>
+      // Apply the saved light/dark choice before the page paints (avoids a flash of the wrong theme).
+      try {
+        var theme = localStorage.getItem("cloudpulse.theme");
+        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
