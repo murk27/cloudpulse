@@ -2,7 +2,7 @@
  * Admin authentication: one password, no user accounts.
  *
  * - The password lives in SSM Parameter Store as an encrypted SecureString (never in code or
- *   in the template). The Lambda reads it once per container and keeps it in memory.
+ *   in the template). The Lambda reads it at runtime and keeps it in memory for 5 minutes.
  * - After a correct login we hand out a session token: "<expiry>.<HMAC signature>".
  *   The signature is computed with a key derived from the password, so nobody can forge
  *   or extend a token without knowing the password. Changing the password logs everyone out.
@@ -11,21 +11,23 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { config, limits } from "./config.ts";
 
-let cachedPassword: string | undefined;
+/** Re-read the password from SSM at most every 5 minutes, so a changed password takes effect quickly. */
+const PASSWORD_CACHE_MS = 5 * 60 * 1000;
+let cached: { value: string; fetchedAt: number } | undefined;
 
 export async function getAdminPassword(): Promise<string> {
   const local = config.localAdminPassword();
   if (local) return local; // local development only
 
-  if (!cachedPassword) {
+  if (!cached || Date.now() - cached.fetchedAt > PASSWORD_CACHE_MS) {
     const ssm = new SSMClient({ region: config.region() });
     const result = await ssm.send(
       new GetParameterCommand({ Name: config.adminPasswordParam(), WithDecryption: true }),
     );
     if (!result.Parameter?.Value) throw new Error("Admin password parameter is empty");
-    cachedPassword = result.Parameter.Value;
+    cached = { value: result.Parameter.Value, fetchedAt: Date.now() };
   }
-  return cachedPassword;
+  return cached.value;
 }
 
 /**
