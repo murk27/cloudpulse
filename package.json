@@ -1,0 +1,57 @@
+{
+  "name": "cloudpulse",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Serverless uptime and latency monitoring on AWS (Lambda, DynamoDB, EventBridge, SNS, S3, CloudFront).",
+  "type": "module",
+  "engines": {
+    "node": ">=20.9"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "tsx scripts/local-server.ts",
+    "dev:web": "vite",
+    "build": "npm run build:web && npm run build:lambda",
+    "build:web": "vite build",
+    "build:lambda": "esbuild backend/handlers/api.ts backend/handlers/checker.ts --bundle --platform=node --target=node22 --format=esm --out-extension:.js=.mjs --outdir=dist/lambda --external:@aws-sdk/* --log-level=warning",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "seed": "tsx scripts/seed.ts",
+    "deploy": "bash scripts/deploy.sh",
+    "destroy": "bash scripts/destroy.sh"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1153.0",
+    "@aws-sdk/client-sns": "^3.1153.0",
+    "@aws-sdk/client-ssm": "^3.1153.0",
+    "@aws-sdk/lib-dynamodb": "^3.1153.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router": "^7.18.4",
+    "recharts": "^3.10.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-cloudformation": "^3.1153.0",
+    "@eslint/js": "^10.0.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/aws-lambda": "^8.10.164",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.6",
+    "dynalite": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.13.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.0",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  }
+}

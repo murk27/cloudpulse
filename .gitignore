@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.aws-sam/
+# samconfig.toml is created by `sam deploy --guided` and contains your alert email
+samconfig.toml
+.env
+.env.*
+!.env.example
+*.log
+coverage/
