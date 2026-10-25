@@ -1,8 +1,7 @@
 node_modules/
 dist/
-.aws-sam/
-# samconfig.toml is created by `sam deploy --guided` and contains your alert email
-samconfig.toml
+.vercel/
+# Local secrets (download with: npx vercel env pull .env.local)
 .env
 .env.*
 !.env.example

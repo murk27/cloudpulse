@@ -2,16 +2,16 @@
 import { Link } from "react-router";
 
 const CARDS = [
-  { to: "/status", title: "Public status page", text: "Live state of every monitor and 90-day uptime history, served from the CloudFront cache." },
+  { to: "/status", title: "Public status page", text: "Live state of every monitor and 90-day uptime history, served from Vercel's CDN cache." },
   { to: "/dashboard", title: "Admin dashboard", text: "Add and remove monitors, see uptime, average and p95 latency, and run checks on demand." },
-  { to: "/architecture", title: "Architecture", text: "How the AWS services fit together, with a short explanation of each one." },
+  { to: "/architecture", title: "Architecture", text: "How the cloud services fit together, with a short explanation of each one." },
 ];
 
 const FLOW = [
-  "EventBridge Scheduler wakes a Lambda function every 5 minutes.",
-  "The Lambda checks every website in parallel and stores the results in DynamoDB.",
-  "Two failures in a row open an incident and SNS emails you. Recovery sends another email.",
-  "The website is static files in S3, delivered worldwide over HTTPS by CloudFront.",
+  "Every 5 minutes, a GitHub Actions schedule calls a Vercel serverless function.",
+  "The function checks every website in parallel and stores the results in Upstash Redis.",
+  "Two failures in a row open an incident and post an alert to Discord. Recovery posts another.",
+  "The website is static files served worldwide over HTTPS by Vercel's CDN.",
 ];
 
 export function HomePage() {
@@ -20,8 +20,8 @@ export function HomePage() {
       <section className="space-y-4">
         <h1 className="text-3xl font-semibold tracking-tight text-ink sm:text-4xl">Is your website up? CloudPulse knows.</h1>
         <p className="max-w-2xl text-lg text-ink-2">
-          A serverless uptime and latency monitor built entirely on AWS managed services. There are no servers to run, and it
-          fits inside the AWS free tier.
+          A serverless uptime and latency monitor built on managed cloud services: Vercel, Upstash Redis and GitHub Actions.
+          There are no servers to run, and it fits inside their free tiers.
         </p>
         <div className="flex flex-wrap gap-3">
           <Link to="/status" className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-ink hover:opacity-90">

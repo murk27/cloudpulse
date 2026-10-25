@@ -1,15 +1,15 @@
 /**
  * The core of CloudPulse: check every monitor, store the results, open or close incidents,
- * send alerts and publish metrics.
+ * send alerts and log a summary.
  *
- * Called from two places:
- *   - handlers/checker.ts -> by EventBridge Scheduler every 5 minutes
- *   - handlers/api.ts     -> by the "Run check now" button on the dashboard
+ * Called from two places (both routes live in backend/app.ts):
+ *   - GET  /api/cron/check -> by GitHub Actions every 5 minutes (and Vercel Cron once a day)
+ *   - POST /api/check-now  -> by the "Run check now" button on the dashboard
  */
-import type { CheckResult, Monitor, RunSummary } from "../../shared/types.ts";
-import { formatDuration } from "../../shared/format.ts";
-import { sendAlert } from "./alerts.ts";
-import { limits } from "./config.ts";
+import type { CheckResult, Monitor, RunSummary } from "../../shared/types.js";
+import { formatDuration } from "../../shared/format.js";
+import { sendAlert } from "./alerts.js";
+import { limits } from "./config.js";
 import {
   addToDailyRollup,
   getChecksSince,
@@ -18,11 +18,11 @@ import {
   resolveIncident,
   saveCheck,
   saveMonitorState,
-} from "./db.ts";
-import { checkUrl } from "./http-check.ts";
-import { evaluateCheck } from "./incidents.ts";
-import { publishRunMetrics } from "./metrics.ts";
-import { average, computeStats, utcDate } from "./stats.ts";
+  trimChecks,
+} from "./db.js";
+import { checkUrl } from "./http-check.js";
+import { evaluateCheck } from "./incidents.js";
+import { average, computeStats, utcDate } from "./stats.js";
 
 interface MonitorRunResult {
   ok: boolean;
@@ -70,13 +70,8 @@ export async function runAllChecks(): Promise<RunSummary> {
   });
 
   summary.durationMs = Date.now() - started;
-  if (monitors.length > 0) {
-    publishRunMetrics({
-      MonitorsUp: summary.up,
-      MonitorsDown: summary.down,
-      AvgLatencyMs: Math.round(average(latencies) ?? 0),
-    });
-  }
+  // One structured JSON line per run: easy to search and filter in Vercel's runtime logs.
+  console.log(JSON.stringify({ event: "check_run", ...summary, avgLatencyMs: Math.round(average(latencies) ?? 0) }));
   return summary;
 }
 
@@ -86,8 +81,13 @@ async function checkMonitor(monitor: Monitor): Promise<MonitorRunResult> {
   const checkedAt = new Date().toISOString();
   const check: CheckResult = { monitorId: monitor.id, checkedAt, ...outcome };
 
-  // 2. Store the raw check and bump today's counters (in parallel).
-  await Promise.all([saveCheck(check), addToDailyRollup(monitor.id, utcDate(new Date(checkedAt)), outcome.ok)]);
+  // 2. Store the raw check, bump today's counters, and drop checks older than 7 days (in parallel).
+  const retentionCutoff = Date.parse(checkedAt) - limits.checkRetentionDays * 24 * 60 * 60 * 1000;
+  await Promise.all([
+    saveCheck(check),
+    addToDailyRollup(monitor.id, utcDate(new Date(checkedAt)), outcome.ok),
+    trimChecks(monitor.id, retentionCutoff),
+  ]);
 
   // 3. Decide whether an incident opens or closes (pure logic, see incidents.ts).
   const evaluation = evaluateCheck(
@@ -115,7 +115,7 @@ async function checkMonitor(monitor: Monitor): Promise<MonitorRunResult> {
           `Reason:  ${outcome.error ?? "Check failed"}`,
           `Failing since: ${startedAt} (UTC)`,
           ``,
-          `You'll get another email when it recovers.`,
+          `You'll get another alert when it recovers.`,
         ].join("\n"),
       );
     }
@@ -140,9 +140,7 @@ async function checkMonitor(monitor: Monitor): Promise<MonitorRunResult> {
 
   // 4. Recompute the 24h stats and save the monitor's new state.
   const since = new Date(Date.parse(checkedAt) - 24 * 60 * 60 * 1000).toISOString();
-  const recent = await getChecksSince(monitor.id, since);
-  // Queries are "eventually consistent", so the check we just wrote may not show up yet.
-  if (!recent.some((c) => c.checkedAt === checkedAt)) recent.push(check);
+  const recent = await getChecksSince(monitor.id, since); // includes the check saved above
 
   await saveMonitorState(monitor.id, {
     status: outcome.ok ? "up" : "down",
@@ -158,7 +156,7 @@ async function checkMonitor(monitor: Monitor): Promise<MonitorRunResult> {
   return { ok: outcome.ok, latencyMs: outcome.latencyMs, opened, resolved };
 }
 
-/** Sends an alert, but never lets an SNS problem break the check itself. */
+/** Sends an alert, but never lets a Discord problem break the check itself. */
 async function notify(subject: string, message: string): Promise<void> {
   try {
     await sendAlert(subject, message);

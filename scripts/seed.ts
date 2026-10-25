@@ -5,17 +5,18 @@
  *   - 90 days of daily uptime rollups for the status page bars
  *   - one resolved incident about 20 hours ago, with matching failed checks
  *
- * Usage:   npm run seed        -> seeds the DynamoDB table of your deployed "cloudpulse" stack
+ * Usage:   npx vercel env pull .env.local   (downloads the Upstash credentials)
+ *          npm run seed
  * Local dev (npm run dev) calls seedDatabase() itself, so you never need to run this locally.
  *
- * WARNING: it deletes all existing CloudPulse data in the table first.
+ * WARNING: it deletes all existing CloudPulse data first. It costs only ~20 Redis commands,
+ * because each monitor's whole history is written with one command per data type.
  */
 import { pathToFileURL } from "node:url";
-import { BatchWriteCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
-import type { CheckResult, DayRollup, Incident, Monitor } from "../shared/types.ts";
-import { config, limits } from "../backend/lib/config.ts";
-import { expiresAfterDays, getDb, keys } from "../backend/lib/db.ts";
-import { computeStats, utcDate } from "../backend/lib/stats.ts";
+import type { CheckResult, DayRollup, Incident } from "../shared/types.js";
+import { config } from "../backend/lib/config.js";
+import { bulk, wipeAll, type MonitorConfig, type MonitorState } from "../backend/lib/db.js";
+import { computeStats, utcDate } from "../backend/lib/stats.js";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -40,42 +41,9 @@ function random(seed: number): () => number {
   };
 }
 
-type Item = Record<string, unknown>;
-
-/** Writes items 25 at a time (the BatchWrite maximum), retrying anything DynamoDB throttles. */
-async function batchWrite(requests: Item[], log: (msg: string) => void): Promise<void> {
-  const table = config.tableName();
-  for (let i = 0; i < requests.length; i += 25) {
-    let pending = requests.slice(i, i + 25);
-    for (let attempt = 0; pending.length > 0; attempt++) {
-      const result = await getDb().send(new BatchWriteCommand({ RequestItems: { [table]: pending } }));
-      pending = (result.UnprocessedItems?.[table] as Item[] | undefined) ?? [];
-      // Provisioned capacity is deliberately small (free tier), so back off and retry.
-      if (pending.length > 0) await new Promise((r) => setTimeout(r, Math.min(5000, 200 * 2 ** attempt)));
-    }
-    const done = Math.min(requests.length, i + 25);
-    if (done % 250 === 0 || done === requests.length) log(`  wrote ${done}/${requests.length} items`);
-  }
-}
-
-async function wipeTable(log: (msg: string) => void): Promise<void> {
-  const deletes: Item[] = [];
-  let startKey: Item | undefined;
-  do {
-    const page = await getDb().send(
-      new ScanCommand({ TableName: config.tableName(), ProjectionExpression: "PK, SK", ExclusiveStartKey: startKey }),
-    );
-    for (const item of page.Items ?? []) deletes.push({ DeleteRequest: { Key: { PK: item.PK, SK: item.SK } } });
-    startKey = page.LastEvaluatedKey;
-  } while (startKey);
-  if (deletes.length) {
-    log(`Deleting ${deletes.length} existing items...`);
-    await batchWrite(deletes, log);
-  }
-}
-
 export async function seedDatabase(log: (msg: string) => void = console.log): Promise<void> {
-  await wipeTable(log);
+  log("Deleting existing CloudPulse data...");
+  await wipeAll();
 
   const now = Date.now();
   const lastCheck = Math.floor((now - 5 * MINUTE) / CHECK_EVERY) * CHECK_EVERY; // aligned, a few minutes ago
@@ -84,10 +52,9 @@ export async function seedDatabase(log: (msg: string) => void = console.log): Pr
   const incidentStart = Math.floor((now - 20 * HOUR) / CHECK_EVERY) * CHECK_EVERY;
   const incidentEnd = incidentStart + 30 * MINUTE; // first successful check after the outage
 
-  const puts: Item[] = [];
-  const put = (item: Item) => puts.push({ PutRequest: { Item: item } });
+  const monitors: { config: MonitorConfig; state: MonitorState }[] = [];
 
-  SAMPLE_MONITORS.forEach((sample, index) => {
+  for (const [index, sample] of SAMPLE_MONITORS.entries()) {
     const rand = random(index + 1);
     const checks: CheckResult[] = [];
 
@@ -106,13 +73,7 @@ export async function seedDatabase(log: (msg: string) => void = console.log): Pr
         ...(failing ? { error: "Expected HTTP 200, got 503" } : {}),
       });
     }
-    for (const check of checks) {
-      put({
-        ...keys.check(check.monitorId, check.checkedAt),
-        ...check,
-        expiresAt: expiresAfterDays(limits.checkRetentionDays, Date.parse(check.checkedAt)),
-      });
-    }
+    await bulk.checks(sample.id, checks);
 
     // Daily rollups: real counts for days covered by the checks above, synthetic before that.
     const rollups = new Map<string, DayRollup>();
@@ -131,29 +92,26 @@ export async function seedDatabase(log: (msg: string) => void = console.log): Pr
       const failed = roll < 0.88 ? 0 : roll < 0.97 ? 1 + Math.floor(rand() * 2) : 4 + Math.floor(rand() * 13);
       rollups.set(date, { date, checksTotal: 288, checksOk: 288 - failed });
     }
-    for (const r of rollups.values()) {
-      put({
-        ...keys.day(sample.id, r.date),
-        ...r,
-        expiresAt: expiresAfterDays(limits.rollupRetentionDays, Date.parse(`${r.date}T00:00:00Z`)),
-      });
-    }
+    await bulk.rollups(sample.id, [...rollups.values()]);
 
     const latest = checks[checks.length - 1]!;
-    const monitor: Monitor = {
-      id: sample.id,
-      name: sample.name,
-      url: sample.url,
-      expectedStatus: 200,
-      createdAt: new Date(firstCheck - 90 * DAY + index * 1000).toISOString(),
-      status: "up",
-      consecutiveFailures: 0,
-      lastCheckedAt: latest.checkedAt,
-      lastLatencyMs: latest.latencyMs,
-      lastStatusCode: latest.statusCode,
-      stats: computeStats(checks, new Date(lastCheck)),
-    };
-    put({ ...keys.monitor(monitor.id), ...monitor });
+    monitors.push({
+      config: {
+        id: sample.id,
+        name: sample.name,
+        url: sample.url,
+        expectedStatus: 200,
+        createdAt: new Date(firstCheck - 90 * DAY + index * 1000).toISOString(),
+      },
+      state: {
+        status: "up",
+        consecutiveFailures: 0,
+        lastCheckedAt: latest.checkedAt,
+        lastLatencyMs: latest.latencyMs,
+        lastStatusCode: latest.statusCode,
+        stats: computeStats(checks, new Date(lastCheck)),
+      },
+    });
 
     if (sample.id === "wikipedia") {
       const incident: Incident = {
@@ -163,35 +121,28 @@ export async function seedDatabase(log: (msg: string) => void = console.log): Pr
         resolvedAt: new Date(incidentEnd).toISOString(),
         cause: "Expected HTTP 200, got 503",
       };
-      put({ ...keys.incident(sample.id, incident.startedAt), ...incident });
+      await bulk.incident(incident);
     }
-  });
+    log(`  ${sample.name}: ${checks.length} checks, ${rollups.size} days of history`);
+  }
 
-  log(`Writing ${puts.length} demo items (4 monitors, 48h of checks, 90 days of rollups, 1 incident)...`);
-  await batchWrite(puts, log);
+  await bulk.monitors(monitors);
   log("Seed complete.");
 }
 
-/** When run from the command line: find the deployed table through CloudFormation, then seed it. */
+/** When run from the command line: seed the Upstash database from .env.local. */
 async function main(): Promise<void> {
-  process.env.AWS_REGION ??= process.env.AWS_DEFAULT_REGION ?? "us-east-1";
-  if (!process.env.TABLE_NAME) {
-    const { CloudFormationClient, DescribeStacksCommand } = await import("@aws-sdk/client-cloudformation");
-    const stackName = process.env.STACK_NAME ?? "cloudpulse";
-    const cfn = new CloudFormationClient({ region: process.env.AWS_REGION });
-    const { Stacks } = await cfn.send(new DescribeStacksCommand({ StackName: stackName }));
-    const tableName = Stacks?.[0]?.Outputs?.find((o) => o.OutputKey === "TableName")?.OutputValue;
-    if (!tableName) throw new Error(`Stack "${stackName}" has no TableName output. Did you deploy it?`);
-    process.env.TABLE_NAME = tableName;
+  if (!config.redisUrl() || !config.redisToken()) {
+    console.error("No Upstash credentials found. Run `npx vercel env pull .env.local` first (see README).");
+    process.exit(1);
   }
-  console.log(`Seeding table ${process.env.TABLE_NAME} in ${process.env.AWS_REGION} (existing data will be replaced)`);
+  console.log(`Seeding ${new URL(config.redisUrl()!).host} (existing data will be replaced)`);
   await seedDatabase();
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
     console.error(err instanceof Error ? err.message : err);
-    console.error('Tip: if this is a credentials error, run:  eval "$(aws configure export-credentials --format env)"  and retry.');
     process.exit(1);
   });
 }

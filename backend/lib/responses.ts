@@ -1,22 +1,19 @@
 /**
- * Helpers for building API Gateway (HTTP API) responses.
+ * Helpers for building HTTP responses (standard Web `Response` objects, which is what
+ * Vercel Functions return).
  */
-import type { APIGatewayProxyStructuredResultV2 } from "aws-lambda";
-
-export type ApiResponse = APIGatewayProxyStructuredResultV2;
 
 /**
  * JSON response. By default responses must NOT be cached: they contain admin data.
- * Routes that may be cached by CloudFront (only /api/status) pass their own Cache-Control.
+ * Routes that may be cached by the CDN (only /api/status) pass their own Cache-Control.
  */
-export function json(statusCode: number, body: unknown, headers: Record<string, string> = {}): ApiResponse {
-  return {
-    statusCode,
+export function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status,
     headers: { "content-type": "application/json", "cache-control": "no-store", ...headers },
-    body: JSON.stringify(body),
-  };
+  });
 }
 
-export function error(statusCode: number, message: string, details?: unknown): ApiResponse {
-  return json(statusCode, { error: message, ...(details ? { details } : {}) });
+export function error(status: number, message: string, details?: unknown, headers: Record<string, string> = {}): Response {
+  return json(status, { error: message, ...(details ? { details } : {}) }, headers);
 }

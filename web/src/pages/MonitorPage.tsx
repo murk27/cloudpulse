@@ -1,13 +1,13 @@
 /** Monitor detail: 24h latency chart, incident timeline and the most recent checks. */
 import { Link, useParams } from "react-router";
-import type { Incident, MonitorDetailResponse } from "../../../shared/types.ts";
-import { formatDuration, formatLatency, formatUptime } from "../../../shared/format.ts";
-import { LatencyChart } from "../components/LatencyChart.tsx";
-import { StatTile } from "../components/StatTile.tsx";
-import { StatusBadge } from "../components/StatusBadge.tsx";
-import { useApi } from "../lib/api.ts";
-import { formatDateTime, timeAgo } from "../lib/time.ts";
-import { useNow } from "../lib/useNow.ts";
+import type { Incident, MonitorDetailResponse } from "../../../shared/types.js";
+import { formatDuration, formatLatency, formatUptime } from "../../../shared/format.js";
+import { LatencyChart } from "../components/LatencyChart.js";
+import { StatTile } from "../components/StatTile.js";
+import { StatusBadge } from "../components/StatusBadge.js";
+import { useApi } from "../lib/api.js";
+import { formatDateTime, timeAgo } from "../lib/time.js";
+import { useNow } from "../lib/useNow.js";
 
 function IncidentRow({ incident, now }: { incident: Incident; now: number }) {
   const open = !incident.resolvedAt;

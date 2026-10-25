@@ -1,72 +1,42 @@
 /**
- * Integration test: runs the REAL checker code against an in-memory DynamoDB (dynalite)
+ * Integration test: runs the REAL checker code against the in-memory store (MemoryKV)
  * with a fake fetch(), and verifies the full incident lifecycle end to end.
  */
-import type { Server } from "node:http";
-import { CreateTableCommand, DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import dynalite from "dynalite";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { Monitor } from "../../shared/types.ts";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import * as db from "../lib/db.js";
+import { MemoryKV, setKV } from "../lib/kv.js";
+import { runAllChecks } from "../lib/run-checks.js";
 
-const PORT = 4568;
-let server: Server;
-
-function newMonitor(id: string, name: string): Monitor {
-  return {
-    id,
-    name,
-    url: `https://${id}.test`,
-    expectedStatus: 200,
-    createdAt: new Date().toISOString(),
-    status: "pending",
-    consecutiveFailures: 0,
-    stats: { uptime24h: null, avgLatencyMs: null, p95LatencyMs: null, sparkline: [] },
-  };
+function newMonitor(id: string, name: string): db.MonitorConfig {
+  return { id, name, url: `https://${id}.test`, expectedStatus: 200, createdAt: new Date().toISOString() };
 }
 
-/** Makes the fake network answer every request with this HTTP status. */
+/**
+ * Makes the fake network answer every request with this HTTP status, after 2 ms, so that
+ * back-to-back runs get distinct timestamps (real runs are minutes apart).
+ */
 function networkReturns(status: number) {
-  vi.stubGlobal("fetch", vi.fn(async () => new Response("body", { status })));
-}
-
-beforeAll(async () => {
-  process.env.TABLE_NAME = "cloudpulse-test";
-  process.env.DYNAMODB_ENDPOINT = `http://localhost:${PORT}`;
-  process.env.AWS_REGION = "us-east-1";
-  delete process.env.TOPIC_ARN; // alerts are logged instead of sent
-
-  server = dynalite({ createTableMs: 0 });
-  await new Promise<void>((resolve) => server.listen(PORT, () => resolve()));
-  const client = new DynamoDBClient({
-    endpoint: process.env.DYNAMODB_ENDPOINT,
-    region: "us-east-1",
-    credentials: { accessKeyId: "test", secretAccessKey: "test" },
-  });
-  await client.send(
-    new CreateTableCommand({
-      TableName: process.env.TABLE_NAME,
-      BillingMode: "PAY_PER_REQUEST",
-      AttributeDefinitions: [
-        { AttributeName: "PK", AttributeType: "S" },
-        { AttributeName: "SK", AttributeType: "S" },
-      ],
-      KeySchema: [
-        { AttributeName: "PK", KeyType: "HASH" },
-        { AttributeName: "SK", KeyType: "RANGE" },
-      ],
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      return new Response("body", { status });
     }),
   );
+}
+
+beforeEach(() => {
+  setKV(new MemoryKV());
+  delete process.env.DISCORD_WEBHOOK_URL; // alerts are logged instead of sent
 });
 
 afterAll(() => {
   vi.unstubAllGlobals();
-  server?.close();
+  vi.restoreAllMocks();
 });
 
 describe("runAllChecks (integration)", () => {
   it("opens an incident after 2 failures, alerts once, and resolves it on recovery", async () => {
-    const db = await import("../lib/db.ts");
-    const { runAllChecks } = await import("../lib/run-checks.ts");
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const alerts = () => log.mock.calls.map((c) => String(c[0])).filter((line) => line.startsWith("[alert]"));
 
@@ -103,15 +73,14 @@ describe("runAllChecks (integration)", () => {
     expect(alerts()[0]).toContain("DOWN: Test site");
     expect(alerts()[1]).toContain("RECOVERED: Test site");
 
-    await db.deleteMonitor("site");
+    const today = new Date().toISOString().slice(0, 10);
+    const [rollup] = await db.getDailyRollups("site", today);
+    expect(rollup).toEqual({ date: today, checksTotal: 5, checksOk: 2 });
     log.mockRestore();
   });
 
-  it("never opens two incidents when two runs overlap (conditional write)", async () => {
-    const db = await import("../lib/db.ts");
-    const { runAllChecks } = await import("../lib/run-checks.ts");
+  it("never opens two incidents when two runs overlap (atomic SET NX)", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
-
     await db.createMonitor(newMonitor("race", "Race site"));
     networkReturns(503);
     await runAllChecks(); // 1st failure
@@ -120,5 +89,16 @@ describe("runAllChecks (integration)", () => {
     const [a, b] = await Promise.all([runAllChecks(), runAllChecks()]);
     expect(a.incidentsOpened.length + b.incidentsOpened.length).toBe(1);
     expect(await db.getIncidents("race")).toHaveLength(1);
+  });
+
+  it("deletes a monitor together with its history", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    await db.createMonitor(newMonitor("gone", "Gone site"));
+    networkReturns(200);
+    await runAllChecks();
+    expect(await db.deleteMonitor("gone")).toBe(true);
+    expect(await db.getMonitor("gone")).toBeNull();
+    expect(await db.getChecksSince("gone", new Date(0).toISOString())).toEqual([]);
+    expect(await db.deleteMonitor("gone")).toBe(false);
   });
 });

@@ -1,0 +1,45 @@
+# The scheduler: calls the deployed checker every 5 minutes.
+#
+# Why GitHub Actions? Vercel's free (Hobby) plan only allows cron jobs once per day, so the
+# 5-minute schedule lives here instead (vercel.json keeps a daily Vercel Cron as a backup).
+#
+# Needs two repository secrets (Settings -> Secrets and variables -> Actions):
+#   APP_URL      your production URL, e.g. https://cloudpulse-yourname.vercel.app
+#   CRON_SECRET  the same value as the CRON_SECRET environment variable on Vercel
+#
+# Notes: GitHub may delay scheduled runs by several minutes when it is busy, only runs them on
+# the default branch, and pauses them after 60 days without commits. Actions minutes are free
+# for public repositories; on a private repository every 5 minutes would use about 8,600
+# minutes a month, far more than the free allowance, so use "*/30 * * * *" there instead.
+name: Scheduled checks
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: # adds a "Run workflow" button in the Actions tab
+
+permissions: {}
+
+# Never run two checks at the same time.
+concurrency:
+  group: scheduled-checks
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Call the CloudPulse checker
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::warning::Add the APP_URL and CRON_SECRET repository secrets to enable scheduled checks."
+            exit 0
+          fi
+          # -f makes curl fail on HTTP errors, so a broken checker turns this run red
+          # (and GitHub emails you about the failed run).
+          curl -fsS --max-time 90 -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron/check"
+          echo

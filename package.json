@@ -2,7 +2,7 @@
   "name": "cloudpulse",
   "version": "1.0.0",
   "private": true,
-  "description": "Serverless uptime and latency monitoring on AWS (Lambda, DynamoDB, EventBridge, SNS, S3, CloudFront).",
+  "description": "Serverless uptime and latency monitoring on Vercel (Functions, CDN, Cron) with Upstash Redis and GitHub Actions.",
   "type": "module",
   "engines": {
     "node": ">=20.9"
@@ -11,21 +11,16 @@
     "dev": "concurrently -k -n api,web -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "tsx scripts/local-server.ts",
     "dev:web": "vite",
-    "build": "npm run build:web && npm run build:lambda",
-    "build:web": "vite build",
-    "build:lambda": "esbuild backend/handlers/api.ts backend/handlers/checker.ts --bundle --platform=node --target=node22 --format=esm --out-extension:.js=.mjs --outdir=dist/lambda --external:@aws-sdk/* --log-level=warning",
+    "build": "vite build",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "seed": "tsx scripts/seed.ts",
-    "deploy": "bash scripts/deploy.sh",
-    "destroy": "bash scripts/destroy.sh"
+    "seed": "tsx --env-file-if-exists=.env.local scripts/seed.ts",
+    "deploy": "npx vercel --prod"
   },
   "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.1153.0",
-    "@aws-sdk/client-sns": "^3.1153.0",
-    "@aws-sdk/client-ssm": "^3.1153.0",
-    "@aws-sdk/lib-dynamodb": "^3.1153.0",
+    "@upstash/ratelimit": "^2.2.0",
+    "@upstash/redis": "^1.39.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-router": "^7.18.4",
@@ -33,17 +28,13 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@aws-sdk/client-cloudformation": "^3.1153.0",
     "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.3.3",
-    "@types/aws-lambda": "^8.10.164",
     "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
     "concurrently": "^10.0.6",
-    "dynalite": "^4.0.0",
-    "esbuild": "^0.28.2",
     "eslint": "^10.13.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.13.0",

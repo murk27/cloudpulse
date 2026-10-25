@@ -3,9 +3,9 @@
  * Successful checks draw the line; failed checks leave a gap and are listed in the tooltip.
  */
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { CheckResult } from "../../../shared/types.ts";
-import { formatTime } from "../lib/time.ts";
-import { useNow } from "../lib/useNow.ts";
+import type { CheckResult } from "../../../shared/types.js";
+import { formatTime } from "../lib/time.js";
+import { useNow } from "../lib/useNow.js";
 
 interface Point {
   t: number;

@@ -1,71 +1,25 @@
 /**
- * Local development server: runs the REAL Lambda code on your machine, with no AWS account.
+ * Local development server: runs the REAL API code (backend/app.ts) on your machine, offline.
  *
- *   1. Starts dynalite (an in-memory DynamoDB clone) and creates the same table as template.yaml.
- *   2. Seeds it with demo data.
- *   3. Serves http://localhost:3001/api/* by turning each request into an API Gateway event and
- *      calling the api Lambda handler, just as API Gateway does in AWS.
- *   4. Runs the checker every 5 minutes, just as EventBridge Scheduler does in AWS.
+ *   1. Uses the in-memory store (MemoryKV) instead of Upstash Redis, and seeds it with demo data.
+ *   2. Serves http://localhost:3001/api/* by turning each Node.js request into a standard Web
+ *      Request and calling handle(), exactly what Vercel does with api/index.ts.
+ *   3. Runs all checks every 5 minutes, like the GitHub Actions scheduler does in production.
  *
- * Vite (http://localhost:5173) proxies /api here. Alerts are printed instead of emailed.
- * This is also an offline backup for your demo if the internet or AWS misbehaves.
+ * Vite (http://localhost:5173) proxies /api here. Alerts are printed instead of sent to Discord.
+ * This is also an offline backup for your demo if the internet misbehaves.
  */
 import { createServer, type IncomingMessage } from "node:http";
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import { CreateTableCommand, DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import dynalite from "dynalite";
 
-const API_PORT = Number(process.env.API_PORT ?? 3001);
-const DYNAMO_PORT = Number(process.env.DYNAMO_PORT ?? 4567);
+const PORT = Number(process.env.API_PORT ?? 3001);
 
-// These environment variables replace what template.yaml sets on the Lambda functions in AWS.
-process.env.TABLE_NAME = "cloudpulse-local";
-process.env.DYNAMODB_ENDPOINT = `http://localhost:${DYNAMO_PORT}`;
-process.env.AWS_REGION = "us-east-1";
+// Local stand-ins for the environment variables you set on Vercel.
+// The Redis variables are removed so the in-memory store is always used locally.
+for (const name of ["UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN", "KV_REST_API_URL", "KV_REST_API_TOKEN", "DISCORD_WEBHOOK_URL"]) {
+  delete process.env[name];
+}
 process.env.ADMIN_PASSWORD ??= "admin";
-
-/** Must stay in sync with the ApiFunction events in template.yaml. */
-const ROUTES = [
-  "GET /api/status",
-  "POST /api/login",
-  "GET /api/monitors",
-  "POST /api/monitors",
-  "GET /api/monitors/{id}",
-  "DELETE /api/monitors/{id}",
-  "POST /api/check-now",
-];
-
-function matchRoute(method: string, path: string) {
-  for (const routeKey of ROUTES) {
-    const [routeMethod, pattern] = routeKey.split(" ") as [string, string];
-    if (routeMethod !== method) continue;
-    const names: string[] = [];
-    const regex = new RegExp(
-      "^" +
-        pattern.replace(/\{(\w+)\}/g, (_m, name: string) => {
-          names.push(name);
-          return "([^/]+)";
-        }) +
-        "$",
-    );
-    const match = regex.exec(path);
-    if (!match) continue;
-    const pathParameters = Object.fromEntries(names.map((n, i) => [n, decodeURIComponent(match[i + 1] ?? "")]));
-    return { routeKey, pathParameters };
-  }
-  return null;
-}
-
-/** Mimics the API Gateway throttle in template.yaml (10 req/s, burst 20) so 429s show up locally too. */
-const throttle = { tokens: 20, last: Date.now() };
-function allowRequest(): boolean {
-  const now = Date.now();
-  throttle.tokens = Math.min(20, throttle.tokens + ((now - throttle.last) / 1000) * 10);
-  throttle.last = now;
-  if (throttle.tokens < 1) return false;
-  throttle.tokens -= 1;
-  return true;
-}
+process.env.CRON_SECRET ??= "local-cron-secret";
 
 async function readBody(req: IncomingMessage): Promise<string | undefined> {
   const chunks: Buffer[] = [];
@@ -74,87 +28,38 @@ async function readBody(req: IncomingMessage): Promise<string | undefined> {
 }
 
 async function main(): Promise<void> {
-  // 1. In-memory DynamoDB
-  const dynamo = dynalite({ createTableMs: 0, deleteTableMs: 0, updateTableMs: 0 });
-  await new Promise<void>((resolve) => dynamo.listen(DYNAMO_PORT, () => resolve()));
-  const raw = new DynamoDBClient({
-    endpoint: process.env.DYNAMODB_ENDPOINT,
-    region: "us-east-1",
-    credentials: { accessKeyId: "local", secretAccessKey: "local" },
-  });
-  await raw.send(
-    new CreateTableCommand({
-      TableName: process.env.TABLE_NAME,
-      BillingMode: "PROVISIONED",
-      ProvisionedThroughput: { ReadCapacityUnits: 10, WriteCapacityUnits: 10 },
-      AttributeDefinitions: [
-        { AttributeName: "PK", AttributeType: "S" },
-        { AttributeName: "SK", AttributeType: "S" },
-      ],
-      KeySchema: [
-        { AttributeName: "PK", KeyType: "HASH" },
-        { AttributeName: "SK", KeyType: "RANGE" },
-      ],
-    }),
-  );
+  // Imported after the environment variables above are set.
+  const { seedDatabase } = await import("./seed.js");
+  const { handle } = await import("../backend/app.js");
+  const { runAllChecks } = await import("../backend/lib/run-checks.js");
 
-  // 2. Demo data. Handlers are imported only now, after the environment variables are set.
-  const { seedDatabase } = await import("./seed.ts");
   await seedDatabase((msg) => console.log(`[seed] ${msg}`));
-  const { handler } = await import("../backend/handlers/api.ts");
-  const { runAllChecks } = await import("../backend/lib/run-checks.ts");
 
-  // 3. HTTP server that behaves like API Gateway
   const server = createServer(async (req, res) => {
-    const url = new URL(req.url ?? "/", `http://localhost:${API_PORT}`);
-    const method = req.method ?? "GET";
     const started = Date.now();
-    const route = matchRoute(method, url.pathname);
-
-    let status: number;
-    let headers: Record<string, string>;
-    let body: string;
-
-    if (!route) {
-      [status, headers, body] = [404, { "content-type": "application/json" }, JSON.stringify({ message: "Not Found" })];
-    } else if (!allowRequest()) {
-      [status, headers, body] = [429, { "content-type": "application/json" }, JSON.stringify({ message: "Too Many Requests" })];
-    } else {
-      const requestHeaders: Record<string, string> = {};
-      for (const [name, value] of Object.entries(req.headers)) {
-        if (value !== undefined) requestHeaders[name.toLowerCase()] = Array.isArray(value) ? value.join(",") : value;
-      }
-      const event = {
-        version: "2.0",
-        routeKey: route.routeKey,
-        rawPath: url.pathname,
-        rawQueryString: url.search.slice(1),
-        headers: requestHeaders,
-        pathParameters: route.pathParameters,
-        body: await readBody(req),
-        isBase64Encoded: false,
-        requestContext: { http: { method, path: url.pathname, sourceIp: req.socket.remoteAddress ?? "" } },
-      } as unknown as APIGatewayProxyEventV2;
-
-      const result = await handler(event);
-      status = result.statusCode ?? 200;
-      headers = Object.fromEntries(Object.entries(result.headers ?? {}).map(([k, v]) => [k, String(v)]));
-      body = result.body ?? "";
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(req.headers)) {
+      if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(",") : value);
     }
+    headers.set("x-forwarded-for", req.socket.remoteAddress ?? "127.0.0.1");
 
-    res.writeHead(status, headers).end(body);
-    console.log(`${method} ${url.pathname} -> ${status} (${Date.now() - started} ms)`);
+    const body = req.method === "GET" || req.method === "HEAD" ? undefined : await readBody(req);
+    const request = new Request(`http://localhost:${PORT}${req.url ?? "/"}`, { method: req.method, headers, body });
+
+    const response = await handle(request);
+    res.writeHead(response.status, Object.fromEntries(response.headers));
+    res.end(Buffer.from(await response.arrayBuffer()));
+    console.log(`${req.method} ${req.url} -> ${response.status} (${Date.now() - started} ms)`);
   });
-  server.listen(API_PORT, () => {
-    console.log(`\nLocal API ready on http://localhost:${API_PORT}  (admin password: "${process.env.ADMIN_PASSWORD}")`);
+
+  server.listen(PORT, () => {
+    console.log(`\nLocal API ready on http://localhost:${PORT}  (admin password: "${process.env.ADMIN_PASSWORD}")`);
     console.log("Open the app at http://localhost:5173\n");
   });
 
-  // 4. The "scheduler": run all checks every 5 minutes
+  // The "scheduler": run all checks every 5 minutes.
   setInterval(() => {
-    runAllChecks()
-      .then((summary) => console.log(`[scheduler] checked ${summary.checked}: ${summary.up} up, ${summary.down} down`))
-      .catch((err: unknown) => console.error("[scheduler] run failed", err));
+    runAllChecks().catch((err: unknown) => console.error("[scheduler] run failed", err));
   }, 5 * 60 * 1000);
 }
 

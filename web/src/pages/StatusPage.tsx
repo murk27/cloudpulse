@@ -1,14 +1,14 @@
 /**
- * Public status page. Data comes from GET /api/status, which CloudFront caches for 60 s.
- * The footer shows whether this load was a CloudFront cache HIT or MISS (from the X-Cache header).
+ * Public status page. Data comes from GET /api/status, which Vercel's CDN caches for 60 s.
+ * The footer shows whether this load was a CDN cache HIT or MISS (from the x-vercel-cache header).
  */
 import { useEffect } from "react";
-import type { OverallStatus, StatusPageResponse } from "../../../shared/types.ts";
-import { formatUptime } from "../../../shared/format.ts";
-import { StatusBadge } from "../components/StatusBadge.tsx";
-import { UptimeBars, UptimeLegend } from "../components/UptimeBars.tsx";
-import { useApi } from "../lib/api.ts";
-import { formatDateTime, timeAgo } from "../lib/time.ts";
+import type { OverallStatus, StatusPageResponse } from "../../../shared/types.js";
+import { formatUptime } from "../../../shared/format.js";
+import { StatusBadge } from "../components/StatusBadge.js";
+import { UptimeBars, UptimeLegend } from "../components/UptimeBars.js";
+import { useApi } from "../lib/api.js";
+import { formatDateTime, timeAgo } from "../lib/time.js";
 
 const OVERALL: Record<OverallStatus, { text: string; icon: string; color: string; stripe: string }> = {
   operational: { text: "All systems operational", icon: "●", color: "text-good", stripe: "bg-good" },
@@ -17,22 +17,24 @@ const OVERALL: Record<OverallStatus, { text: string; icon: string; color: string
   unknown: { text: "Waiting for the first checks", icon: "○", color: "text-muted", stripe: "bg-nodata" },
 };
 
-/** Reads CloudFront's X-Cache and Age response headers. */
+/** Reads Vercel's x-vercel-cache (HIT, MISS, STALE...) and Age response headers. */
 function CdnIndicator({ response, durationMs }: { response?: Response; durationMs?: number }) {
   if (!response) return null;
-  const xCache = response.headers.get("x-cache");
+  const cache = response.headers.get("x-vercel-cache")?.toUpperCase();
   const age = response.headers.get("age");
   const took = durationMs === undefined ? "" : ` · ${durationMs} ms`;
 
-  if (!xCache) {
-    return <span>CDN: none (local development, no CloudFront){took}</span>;
+  if (!cache) {
+    return <span>CDN: none (local development, no Vercel edge network){took}</span>;
   }
-  const hit = /hit/i.test(xCache);
+  const fromEdge = cache === "HIT" || cache === "STALE";
   return (
     <span>
-      CloudFront cache:{" "}
-      <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono font-semibold text-ink">{hit ? "HIT" : "MISS"}</span>{" "}
-      {hit ? `served from the edge${age ? `, ${age}s old` : ""}` : "fetched fresh from API Gateway → Lambda → DynamoDB"}
+      Vercel CDN cache:{" "}
+      <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono font-semibold text-ink">{cache}</span>{" "}
+      {fromEdge
+        ? `served from the edge${age ? `, ${age}s old` : ""}`
+        : "generated fresh by the Vercel Function from Upstash Redis"}
       {took}
     </span>
   );
@@ -57,7 +59,7 @@ export function StatusPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold text-ink">System status</h1>
-        <p className="mt-1 text-sm text-ink-2">Checked every 5 minutes by a scheduled AWS Lambda function.</p>
+        <p className="mt-1 text-sm text-ink-2">Checked every 5 minutes by a scheduled serverless function.</p>
       </div>
 
       <div className="relative overflow-hidden rounded-xl border border-line bg-surface p-5">

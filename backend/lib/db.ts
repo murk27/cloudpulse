@@ -1,199 +1,110 @@
 /**
- * All DynamoDB access lives in this file. CloudPulse uses ONE table ("single-table design").
+ * All data access lives in this file, on top of the key-value store in kv.ts (Upstash Redis).
  *
- * Item layout (PK = partition key, SK = sort key):
- *   Monitor   PK = "MONITOR"               SK = <monitorId>
- *   Check     PK = "CHECK#<monitorId>"     SK = <checkedAt, ISO timestamp>   (TTL: 90 days)
- *   Day       PK = "DAY#<monitorId>"       SK = <YYYY-MM-DD>                 (TTL: 100 days)
- *   Incident  PK = "INCIDENT#<monitorId>"  SK = <startedAt, ISO timestamp>
+ * Redis keys (all prefixed "cp:"):
+ *   cp:monitors            HASH   id -> monitor settings (JSON). Written only by the API.
+ *   cp:state               HASH   id -> latest status + 24h stats (JSON). Written only by the checker.
+ *   cp:open:<id>           STRING start time of the open incident (exists only while one is open)
+ *   cp:checks:<id>         ZSET   one member per check (JSON), scored by time in ms
+ *   cp:days:<id>           HASH   "<date>:total" / "<date>:ok" -> counters for the 90-day bars
+ *   cp:incidents:<id>      HASH   startedAt -> incident (JSON)
  *
- * ISO timestamps sort alphabetically in time order, so "all checks since X" is a single
- * cheap Query on one partition with `SK >= X`. No table scans are needed anywhere in the app.
+ * Settings and state live in different hashes so the API and the checker never overwrite each
+ * other's writes. A sorted set scored by timestamp makes "all checks since X" a single command.
  */
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import {
-  DeleteCommand,
-  DynamoDBDocumentClient,
-  GetCommand,
-  PutCommand,
-  QueryCommand,
-  UpdateCommand,
-  type QueryCommandInput,
-} from "@aws-sdk/lib-dynamodb";
-import type { CheckResult, DayRollup, Incident, Monitor } from "../../shared/types.ts";
-import { config, limits } from "./config.ts";
+import type { CheckResult, DayRollup, Incident, Monitor } from "../../shared/types.js";
+import { getKV } from "./kv.js";
 
-let docClient: DynamoDBDocumentClient | undefined;
-
-/** Returns a DynamoDB client, created on first use and then reused across Lambda invocations. */
-export function getDb(): DynamoDBDocumentClient {
-  if (!docClient) {
-    const endpoint = config.dynamoEndpoint();
-    const client = new DynamoDBClient({
-      region: config.region(),
-      // Locally we talk to dynalite (an in-memory DynamoDB clone) with dummy credentials.
-      ...(endpoint ? { endpoint, credentials: { accessKeyId: "local", secretAccessKey: "local" } } : {}),
-    });
-    // removeUndefinedValues lets us pass objects with optional fields straight to DynamoDB.
-    docClient = DynamoDBDocumentClient.from(client, { marshallOptions: { removeUndefinedValues: true } });
-  }
-  return docClient;
-}
-
-/** Builds the primary key for each item type. */
-export const keys = {
-  monitor: (id: string) => ({ PK: "MONITOR", SK: id }),
-  check: (monitorId: string, checkedAt: string) => ({ PK: `CHECK#${monitorId}`, SK: checkedAt }),
-  day: (monitorId: string, date: string) => ({ PK: `DAY#${monitorId}`, SK: date }),
-  incident: (monitorId: string, startedAt: string) => ({ PK: `INCIDENT#${monitorId}`, SK: startedAt }),
+const keys = {
+  monitors: "cp:monitors",
+  state: "cp:state",
+  open: (id: string) => `cp:open:${id}`,
+  checks: (id: string) => `cp:checks:${id}`,
+  days: (id: string) => `cp:days:${id}`,
+  incidents: (id: string) => `cp:incidents:${id}`,
 };
 
-/** DynamoDB TTL wants "seconds since 1970". Items are deleted for free some time after this. */
-export function expiresAfterDays(days: number, from: number = Date.now()): number {
-  return Math.floor(from / 1000) + days * 24 * 60 * 60;
-}
+/** What a human configures for a monitor (written by the API). */
+export type MonitorConfig = Pick<Monitor, "id" | "name" | "url" | "expectedStatus" | "createdAt">;
 
-/** Removes the storage-only fields (PK, SK, expiresAt) before an item is returned to callers. */
-function strip<T>(item: Record<string, unknown>): T {
-  const { PK, SK, expiresAt, ...rest } = item;
-  return rest as T;
-}
-
-/** Runs a Query and follows pagination until every matching item has been read. */
-async function queryAll(input: Omit<QueryCommandInput, "TableName">): Promise<Record<string, unknown>[]> {
-  const items: Record<string, unknown>[] = [];
-  let startKey: Record<string, unknown> | undefined;
-  do {
-    const page = await getDb().send(
-      new QueryCommand({ ...input, TableName: config.tableName(), ExclusiveStartKey: startKey }),
-    );
-    items.push(...(page.Items ?? []));
-    startKey = page.LastEvaluatedKey;
-    if (input.Limit && items.length >= input.Limit) break;
-  } while (startKey);
-  return items;
-}
-
-/**
- * Turns { a: 1, b: undefined } into "SET #a = :a REMOVE #b".
- * Every attribute name goes through "#name" placeholders so we never clash with
- * DynamoDB reserved words (status, name, url... are all reserved).
- */
-function buildUpdate(fields: Record<string, unknown>) {
-  const set: string[] = [];
-  const remove: string[] = [];
-  const names: Record<string, string> = {};
-  const values: Record<string, unknown> = {};
-  for (const [field, value] of Object.entries(fields)) {
-    names[`#${field}`] = field;
-    if (value === undefined) {
-      remove.push(`#${field}`);
-    } else {
-      set.push(`#${field} = :${field}`);
-      values[`:${field}`] = value;
-    }
-  }
-  const expression = [set.length ? `SET ${set.join(", ")}` : "", remove.length ? `REMOVE ${remove.join(", ")}` : ""]
-    .join(" ")
-    .trim();
-  return { expression, names, values };
-}
-
-function isConditionFailure(err: unknown): boolean {
-  return err instanceof Error && err.name === "ConditionalCheckFailedException";
-}
-
-// ---------------------------------------------------------------- monitors
-
-export async function listMonitors(): Promise<Monitor[]> {
-  const items = await queryAll({
-    KeyConditionExpression: "PK = :pk",
-    ExpressionAttributeValues: { ":pk": "MONITOR" },
-  });
-  return items.map((item) => strip<Monitor>(item)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-}
-
-export async function getMonitor(id: string): Promise<Monitor | null> {
-  const result = await getDb().send(new GetCommand({ TableName: config.tableName(), Key: keys.monitor(id) }));
-  return result.Item ? strip<Monitor>(result.Item) : null;
-}
-
-export async function createMonitor(monitor: Monitor): Promise<void> {
-  await getDb().send(
-    new PutCommand({
-      TableName: config.tableName(),
-      Item: { ...keys.monitor(monitor.id), ...monitor },
-      ConditionExpression: "attribute_not_exists(PK)", // never overwrite an existing monitor
-    }),
-  );
-}
-
-/** Deletes a monitor. Its old checks and rollups are cleaned up later by TTL, for free. */
-export async function deleteMonitor(id: string): Promise<boolean> {
-  const result = await getDb().send(
-    new DeleteCommand({ TableName: config.tableName(), Key: keys.monitor(id), ReturnValues: "ALL_OLD" }),
-  );
-  return Boolean(result.Attributes);
-}
-
-/** The fields the checker updates on a monitor after each check. */
+/** What the checker records after each run. */
 export type MonitorState = Pick<
   Monitor,
   "status" | "consecutiveFailures" | "failingSince" | "lastCheckedAt" | "lastLatencyMs" | "lastStatusCode" | "lastError" | "stats"
 >;
 
-/** Saves the latest state. Returns false if the monitor was deleted while it was being checked. */
-export async function saveMonitorState(id: string, state: MonitorState): Promise<boolean> {
-  const update = buildUpdate({ ...state });
-  try {
-    await getDb().send(
-      new UpdateCommand({
-        TableName: config.tableName(),
-        Key: keys.monitor(id),
-        UpdateExpression: update.expression,
-        ExpressionAttributeNames: update.names,
-        ExpressionAttributeValues: update.values,
-        ConditionExpression: "attribute_exists(PK)", // don't re-create a deleted monitor
-      }),
-    );
-    return true;
-  } catch (err) {
-    if (isConditionFailure(err)) return false;
-    throw err;
-  }
+export const EMPTY_STATE: MonitorState = {
+  status: "pending",
+  consecutiveFailures: 0,
+  stats: { uptime24h: null, avgLatencyMs: null, p95LatencyMs: null, sparkline: [] },
+};
+
+// ---------------------------------------------------------------- monitors
+
+/** All monitors: settings + latest state + open incident, in 3 commands total. */
+export async function listMonitors(): Promise<Monitor[]> {
+  const kv = getKV();
+  const [configs, states] = await Promise.all([kv.hgetall(keys.monitors), kv.hgetall(keys.state)]);
+  const ids = Object.keys(configs);
+  const openIncidents = await kv.mget(ids.map(keys.open));
+
+  return ids
+    .map((id, i) => {
+      const settings = JSON.parse(configs[id]!) as MonitorConfig;
+      const state = states[id] ? (JSON.parse(states[id]) as MonitorState) : EMPTY_STATE;
+      return { ...settings, ...state, openIncidentStartedAt: openIncidents[i] ?? undefined };
+    })
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function getMonitor(id: string): Promise<Monitor | null> {
+  return (await listMonitors()).find((m) => m.id === id) ?? null;
+}
+
+export async function createMonitor(monitor: MonitorConfig): Promise<void> {
+  const kv = getKV();
+  await Promise.all([
+    kv.hset(keys.monitors, { [monitor.id]: JSON.stringify(monitor) }),
+    kv.hset(keys.state, { [monitor.id]: JSON.stringify(EMPTY_STATE) }),
+  ]);
+}
+
+/** Deletes a monitor and all of its history. Returns false if it didn't exist. */
+export async function deleteMonitor(id: string): Promise<boolean> {
+  const kv = getKV();
+  const removed = await kv.hdel(keys.monitors, id);
+  if (removed === 0) return false;
+  await Promise.all([
+    kv.hdel(keys.state, id),
+    kv.del(keys.open(id), keys.checks(id), keys.days(id), keys.incidents(id)),
+  ]);
+  return true;
+}
+
+export async function saveMonitorState(id: string, state: MonitorState): Promise<void> {
+  await getKV().hset(keys.state, { [id]: JSON.stringify(state) });
 }
 
 // ---------------------------------------------------------------- checks + daily rollups
 
 export async function saveCheck(check: CheckResult): Promise<void> {
-  await getDb().send(
-    new PutCommand({
-      TableName: config.tableName(),
-      Item: {
-        ...keys.check(check.monitorId, check.checkedAt),
-        ...check,
-        expiresAt: expiresAfterDays(limits.checkRetentionDays, Date.parse(check.checkedAt)),
-      },
-    }),
-  );
+  await getKV().zadd(keys.checks(check.monitorId), [
+    { score: Date.parse(check.checkedAt), member: JSON.stringify(check) },
+  ]);
 }
 
-/** Adds one check to that day's counters. ADD is atomic, so concurrent runs can't lose a count. */
+/** Deletes raw checks older than the cutoff. (Redis expiry works per key, not per member.) */
+export async function trimChecks(monitorId: string, olderThanMs: number): Promise<void> {
+  await getKV().zremrangeByScore(keys.checks(monitorId), 0, olderThanMs);
+}
+
+/** Adds one check to that day's counters. HINCRBY is atomic, so concurrent runs can't lose a count. */
 export async function addToDailyRollup(monitorId: string, date: string, ok: boolean): Promise<void> {
-  await getDb().send(
-    new UpdateCommand({
-      TableName: config.tableName(),
-      Key: keys.day(monitorId, date),
-      UpdateExpression: "ADD checksTotal :one, checksOk :ok SET #date = :date, expiresAt = :exp",
-      ExpressionAttributeNames: { "#date": "date" },
-      ExpressionAttributeValues: {
-        ":one": 1,
-        ":ok": ok ? 1 : 0,
-        ":date": date,
-        ":exp": expiresAfterDays(limits.rollupRetentionDays, Date.parse(`${date}T00:00:00Z`)),
-      },
-    }),
-  );
+  const kv = getKV();
+  await Promise.all([
+    kv.hincrby(keys.days(monitorId), `${date}:total`, 1),
+    ok ? kv.hincrby(keys.days(monitorId), `${date}:ok`, 1) : Promise.resolve(0),
+  ]);
 }
 
 /** Checks for one monitor since a timestamp. Oldest first unless newestFirst is set. */
@@ -202,88 +113,117 @@ export async function getChecksSince(
   sinceIso: string,
   options: { newestFirst?: boolean; limit?: number } = {},
 ): Promise<CheckResult[]> {
-  const items = await queryAll({
-    KeyConditionExpression: "PK = :pk AND SK >= :since",
-    ExpressionAttributeValues: { ":pk": `CHECK#${monitorId}`, ":since": sinceIso },
-    ScanIndexForward: !options.newestFirst,
-    Limit: options.limit,
-  });
-  return items.map((item) => strip<CheckResult>(item));
+  const members = await getKV().zrangeByScore(keys.checks(monitorId), Date.parse(sinceIso), Number.MAX_SAFE_INTEGER);
+  const checks = members.map((m) => JSON.parse(m) as CheckResult);
+  if (options.newestFirst) checks.reverse();
+  return options.limit ? checks.slice(0, options.limit) : checks;
 }
 
 export async function getDailyRollups(monitorId: string, sinceDate: string): Promise<DayRollup[]> {
-  const items = await queryAll({
-    KeyConditionExpression: "PK = :pk AND SK >= :since",
-    ExpressionAttributeValues: { ":pk": `DAY#${monitorId}`, ":since": sinceDate },
-  });
-  return items.map((item) => strip<DayRollup>(item));
+  const counters = await getKV().hgetall(keys.days(monitorId));
+  const rollups = new Map<string, DayRollup>();
+  for (const [field, value] of Object.entries(counters)) {
+    const [date, kind] = field.split(":") as [string, string];
+    if (date < sinceDate) continue;
+    const r = rollups.get(date) ?? { date, checksTotal: 0, checksOk: 0 };
+    if (kind === "total") r.checksTotal = Number(value);
+    else r.checksOk = Number(value);
+    rollups.set(date, r);
+  }
+  return [...rollups.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
 // ---------------------------------------------------------------- incidents
 
 export async function getIncidents(monitorId: string, limit = 20): Promise<Incident[]> {
-  const items = await queryAll({
-    KeyConditionExpression: "PK = :pk",
-    ExpressionAttributeValues: { ":pk": `INCIDENT#${monitorId}` },
-    ScanIndexForward: false, // newest first
-    Limit: limit,
-  });
-  return items.slice(0, limit).map((item) => strip<Incident>(item));
+  const all = await getKV().hgetall(keys.incidents(monitorId));
+  return Object.values(all)
+    .map((json) => JSON.parse(json) as Incident)
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt)) // newest first
+    .slice(0, limit);
 }
 
 /**
- * Opens an incident. The conditional write ("only if no incident is open") makes this safe
- * even if two checker runs overlap: only one of them can win, so we never send duplicate alerts.
+ * Opens an incident. SET ... NX ("only if it doesn't exist") is atomic, so if two checker runs
+ * overlap only one of them can open the incident, and we never send duplicate alerts.
  * Returns false if another run already opened it.
  */
 export async function openIncident(monitor: Monitor, startedAt: string, cause: string): Promise<boolean> {
-  try {
-    await getDb().send(
-      new UpdateCommand({
-        TableName: config.tableName(),
-        Key: keys.monitor(monitor.id),
-        UpdateExpression: "SET openIncidentStartedAt = :startedAt",
-        ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(openIncidentStartedAt)",
-        ExpressionAttributeValues: { ":startedAt": startedAt },
-      }),
-    );
-  } catch (err) {
-    if (isConditionFailure(err)) return false;
-    throw err;
-  }
+  const kv = getKV();
+  const won = await kv.set(keys.open(monitor.id), startedAt, { nx: true });
+  if (!won) return false;
   const incident: Incident = { monitorId: monitor.id, monitorName: monitor.name, startedAt, cause };
-  await getDb().send(
-    new PutCommand({ TableName: config.tableName(), Item: { ...keys.incident(monitor.id, startedAt), ...incident } }),
-  );
+  await kv.hset(keys.incidents(monitor.id), { [startedAt]: JSON.stringify(incident) });
   return true;
 }
 
-/** Closes the open incident (same conditional-write trick). Returns the closed incident, or null. */
+/** Closes the open incident. GETDEL is atomic too: only one run gets the start time back. */
 export async function resolveIncident(monitor: Monitor, resolvedAt: string): Promise<Incident | null> {
-  const startedAt = monitor.openIncidentStartedAt;
+  const kv = getKV();
+  const startedAt = await kv.getdel(keys.open(monitor.id));
   if (!startedAt) return null;
-  try {
-    await getDb().send(
-      new UpdateCommand({
-        TableName: config.tableName(),
-        Key: keys.monitor(monitor.id),
-        UpdateExpression: "REMOVE openIncidentStartedAt",
-        ConditionExpression: "openIncidentStartedAt = :startedAt",
-        ExpressionAttributeValues: { ":startedAt": startedAt },
-      }),
-    );
-  } catch (err) {
-    if (isConditionFailure(err)) return null;
-    throw err;
-  }
-  const result = await getDb().send(
-    new UpdateCommand({
-      TableName: config.tableName(),
-      Key: keys.incident(monitor.id, startedAt),
-      UpdateExpression: "SET resolvedAt = :resolvedAt",
-      ExpressionAttributeValues: { ":resolvedAt": resolvedAt },
-      ReturnValues: "ALL_NEW",
-    }),
-  );
-  return result.Attributes ? strip<Incident>(result.Attributes) : null;
+  const stored = await kv.hget(keys.incidents(monitor.id), startedAt);
+  const incident: Incident = {
+    ...(stored
+      ? (JSON.parse(stored) as Incident)
+      : { monitorId: monitor.id, monitorName: monitor.name, startedAt, cause: "unknown" }),
+    resolvedAt,
+  };
+  await kv.hset(keys.incidents(monitor.id), { [startedAt]: JSON.stringify(incident) });
+  return incident;
 }
+
+// ---------------------------------------------------------------- outage demo switch
+
+/** The fake "demo target" website is down while this key exists. */
+const DEMO_DOWN_KEY = "cp:demo-down";
+
+export async function isDemoTargetDown(): Promise<boolean> {
+  return (await getKV().get(DEMO_DOWN_KEY)) !== null;
+}
+
+export async function setDemoTargetDown(down: boolean): Promise<void> {
+  const kv = getKV();
+  if (down) await kv.set(DEMO_DOWN_KEY, new Date().toISOString());
+  else await kv.del(DEMO_DOWN_KEY);
+}
+
+// ---------------------------------------------------------------- seeding helpers
+
+/** Deletes every CloudPulse key (used by the seed script). */
+export async function wipeAll(): Promise<void> {
+  const kv = getKV();
+  const [configs, states] = await Promise.all([kv.hgetall(keys.monitors), kv.hgetall(keys.state)]);
+  const ids = [...new Set([...Object.keys(configs), ...Object.keys(states)])];
+  await kv.del(
+    keys.monitors,
+    keys.state,
+    ...ids.flatMap((id) => [keys.open(id), keys.checks(id), keys.days(id), keys.incidents(id)]),
+  );
+}
+
+/** Bulk writes for the seed script: whole histories in a handful of commands. */
+export const bulk = {
+  async monitors(entries: { config: MonitorConfig; state: MonitorState }[]): Promise<void> {
+    const kv = getKV();
+    await kv.hset(keys.monitors, Object.fromEntries(entries.map((e) => [e.config.id, JSON.stringify(e.config)])));
+    await kv.hset(keys.state, Object.fromEntries(entries.map((e) => [e.config.id, JSON.stringify(e.state)])));
+  },
+  async checks(monitorId: string, checks: CheckResult[]): Promise<void> {
+    await getKV().zadd(
+      keys.checks(monitorId),
+      checks.map((c) => ({ score: Date.parse(c.checkedAt), member: JSON.stringify(c) })),
+    );
+  },
+  async rollups(monitorId: string, rollups: DayRollup[]): Promise<void> {
+    const fields: Record<string, string> = {};
+    for (const r of rollups) {
+      fields[`${r.date}:total`] = String(r.checksTotal);
+      fields[`${r.date}:ok`] = String(r.checksOk);
+    }
+    await getKV().hset(keys.days(monitorId), fields);
+  },
+  async incident(incident: Incident): Promise<void> {
+    await getKV().hset(keys.incidents(incident.monitorId), { [incident.startedAt]: JSON.stringify(incident) });
+  },
+};

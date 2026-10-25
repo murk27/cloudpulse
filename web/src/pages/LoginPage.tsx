@@ -1,7 +1,7 @@
 /** Admin login: sends the password to POST /api/login and stores the returned session token. */
 import { useState, type FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router";
-import { request, setToken } from "../lib/api.ts";
+import { request, setToken } from "../lib/api.js";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -33,7 +33,7 @@ export function LoginPage() {
     <div className="mx-auto max-w-sm">
       <h1 className="text-2xl font-semibold text-ink">Admin login</h1>
       <p className="mt-1 text-sm text-ink-2">
-        The password is stored encrypted in AWS Systems Manager Parameter Store.
+        The password is stored as an encrypted Vercel environment variable.
       </p>
       <form onSubmit={onSubmit} className="mt-6 space-y-4 rounded-xl border border-line bg-surface p-5">
         <label className="block text-sm">

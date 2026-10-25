@@ -5,12 +5,12 @@ import reactHooks from "eslint-plugin-react-hooks";
 import globals from "globals";
 
 export default tseslint.config(
-  { ignores: ["dist", "node_modules", ".aws-sam"] },
+  { ignores: ["dist", "node_modules", ".vercel"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
     rules: {
-      // Allow `const { PK, ...rest } = item` (dropping fields) and `_unused` names.
+      // Allow `const { dropped, ...rest } = item` and parameters named `_unused`.
       "@typescript-eslint/no-unused-vars": ["error", { ignoreRestSiblings: true, varsIgnorePattern: "^_", argsIgnorePattern: "^_" }],
     },
   },
@@ -21,7 +21,7 @@ export default tseslint.config(
     rules: reactHooks.configs.recommended.rules,
   },
   {
-    files: ["backend/**/*.ts", "scripts/**/*.ts", "shared/**/*.ts", "*.config.{ts,js}"],
+    files: ["api/**/*.ts", "backend/**/*.ts", "scripts/**/*.ts", "shared/**/*.ts", "*.config.{ts,js}"],
     languageOptions: { globals: globals.node },
   },
 );

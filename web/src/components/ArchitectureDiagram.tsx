@@ -1,112 +1,96 @@
 /**
  * Hand-built SVG diagram of the CloudPulse architecture.
  * Each box has a number that matches the caption cards on the Architecture page.
- * Layout: a 5-column x 4-row grid; arrows are straight lines between box edges.
+ * Boxes are placed at explicit coordinates; the Vercel Function is a tall box in the middle
+ * because almost everything connects to it.
  */
 
 type Group = "edge" | "compute" | "data" | "ops" | "external" | "tooling";
 
 export const GROUPS: Record<Group, { label: string; color: string; dashed?: boolean }> = {
-  edge: { label: "Edge & API", color: "var(--cat-1)" },
-  compute: { label: "Compute & events", color: "var(--cat-2)" },
-  data: { label: "Storage & secrets", color: "var(--cat-3)" },
+  edge: { label: "Edge network", color: "var(--cat-1)" },
+  compute: { label: "Compute & scheduling", color: "var(--cat-2)" },
+  data: { label: "Data & secrets", color: "var(--cat-3)" },
   ops: { label: "Alerts & observability", color: "var(--cat-4)" },
-  external: { label: "Outside AWS", color: "var(--axis)", dashed: true },
+  external: { label: "Outside the platform", color: "var(--axis)", dashed: true },
   tooling: { label: "Build & deploy tooling", color: "var(--axis)", dashed: true },
 };
 
 interface Node {
   n: number;
-  col: number;
-  row: number;
+  x: number;
+  y: number;
+  h?: number;
   title: string;
   sub: string;
   group: Group;
+  lines?: string[]; // extra text inside tall boxes
 }
 
-export const NODES: Node[] = [
-  { n: 1, col: 0, row: 0, title: "Browser", sub: "React app", group: "external" },
-  { n: 2, col: 1, row: 0, title: "CloudFront", sub: "CDN · HTTPS", group: "edge" },
-  { n: 3, col: 2, row: 0, title: "API Gateway", sub: "HTTP API · throttling", group: "edge" },
-  { n: 4, col: 3, row: 0, title: "Lambda: api", sub: "routes + login", group: "compute" },
-  { n: 5, col: 4, row: 0, title: "Parameter Store", sub: "encrypted password", group: "data" },
-  { n: 6, col: 1, row: 1, title: "S3 bucket", sub: "website (private)", group: "data" },
-  { n: 7, col: 3, row: 1, title: "DynamoDB", sub: "single table + TTL", group: "data" },
-  { n: 8, col: 2, row: 2, title: "EventBridge", sub: "Scheduler · 5 min", group: "compute" },
-  { n: 9, col: 3, row: 2, title: "Lambda: checker", sub: "parallel HTTP checks", group: "compute" },
-  { n: 10, col: 4, row: 2, title: "Your websites", sub: "monitored URLs", group: "external" },
-  { n: 11, col: 2, row: 3, title: "CloudWatch", sub: "logs · metrics · alarm", group: "ops" },
-  { n: 12, col: 3, row: 3, title: "SNS topic", sub: "alert fan-out", group: "ops" },
-  { n: 13, col: 4, row: 3, title: "Email inbox", sub: "DOWN / RECOVERED", group: "external" },
-  { n: 14, col: 0, row: 2, title: "AWS SAM", sub: "CloudFormation IaC", group: "tooling" },
-  { n: 15, col: 0, row: 3, title: "GitHub Actions", sub: "CI: lint · test · build", group: "tooling" },
-];
-
-// Grid geometry (SVG user units).
 const W = 150;
 const H = 64;
-const COL_X = [20, 215, 410, 605, 800];
-const ROW_Y = [40, 160, 290, 420];
+const COL = [20, 225, 430, 645];
 
-const x = (col: number) => COL_X[col] ?? 0;
-const y = (row: number) => ROW_Y[row] ?? 0;
+export const NODES: Node[] = [
+  { n: 1, x: COL[0]!, y: 40, title: "Browser", sub: "React app", group: "external" },
+  { n: 2, x: COL[1]!, y: 40, title: "Vercel CDN", sub: "static site + cache", group: "edge" },
+  {
+    n: 3,
+    x: COL[2]!,
+    y: 40,
+    h: 364,
+    title: "Vercel Function",
+    sub: "api/index.ts",
+    group: "compute",
+    lines: ["routes every /api/* call", "checks admin login", "rate-limits by IP", "runs the uptime checks", "opens / closes incidents"],
+  },
+  { n: 4, x: COL[3]!, y: 40, title: "Upstash Redis", sub: "data + rate limits", group: "data" },
+  { n: 5, x: COL[3]!, y: 140, title: "Env variables", sub: "secrets, encrypted", group: "data" },
+  { n: 6, x: COL[3]!, y: 240, title: "Discord", sub: "alert webhook", group: "ops" },
+  { n: 7, x: COL[3]!, y: 340, title: "Your websites", sub: "monitored URLs", group: "external" },
+  { n: 8, x: COL[1]!, y: 200, title: "GitHub Actions", sub: "schedule · 5 min", group: "compute" },
+  { n: 9, x: COL[1]!, y: 300, title: "Vercel Cron", sub: "daily backup run", group: "compute" },
+  { n: 10, x: COL[2]!, y: 440, title: "Vercel Logs", sub: "runtime logs", group: "ops" },
+  { n: 11, x: COL[0]!, y: 330, title: "GitHub CI", sub: "lint · test · build", group: "tooling" },
+  { n: 12, x: COL[0]!, y: 430, title: "Git deploys", sub: "push = new version", group: "tooling" },
+];
 
 interface Edge {
-  d: string; // SVG path
+  d: string;
   label: string;
   lx: number;
   ly: number;
   anchor?: "start" | "middle" | "end";
 }
 
-/** Horizontal arrow from the right edge of (col,row) to the left edge of (col+1,row). */
-function right(col: number, row: number, label: string): Edge {
-  const x1 = x(col) + W;
-  const x2 = x(col + 1);
-  const yy = y(row) + H / 2;
-  return { d: `M${x1},${yy} L${x2 - 2},${yy}`, label, lx: (x1 + x2) / 2, ly: yy - 7 };
+/** Horizontal arrow at height y from x1 to x2, labelled above the middle. */
+function across(x1: number, x2: number, y: number, label: string): Edge {
+  return { d: `M${x1},${y} L${x2 - 2},${y}`, label, lx: (x1 + x2) / 2, ly: y - 7 };
 }
 
-/** Vertical arrow in a column between two rows (down if toRow > fromRow, else up). */
-function vertical(col: number, fromRow: number, toRow: number, label: string): Edge {
-  const xx = x(col) + W / 2;
-  const down = toRow > fromRow;
-  const y1 = down ? y(fromRow) + H : y(fromRow);
-  const y2 = down ? y(toRow) - 2 : y(toRow) + H + 2;
-  return { d: `M${xx},${y1} L${xx},${y2}`, label, lx: xx + 7, ly: (y1 + y2) / 2 + 4, anchor: "start" };
-}
+const fnLeft = COL[2]!;
+const fnRight = COL[2]! + W;
 
 const EDGES: Edge[] = [
-  right(0, 0, "HTTPS"),
-  right(1, 0, "/api/*"),
-  right(2, 0, "invoke"),
-  right(3, 0, "read"),
-  vertical(1, 0, 1, "files (OAC)"),
-  vertical(3, 0, 1, "read / write"),
-  right(2, 2, "invoke"),
-  vertical(3, 2, 1, "save checks"),
-  right(3, 2, "GET"),
-  vertical(3, 2, 3, "publish"),
-  right(3, 3, "email"),
-  right(2, 3, "alarm"),
-  // Checker -> CloudWatch: a short diagonal down-left.
-  {
-    d: `M${x(3) + 12},${y(2) + H} L${x(2) + W - 6},${y(3) - 4}`,
-    label: "logs + metrics",
-    lx: x(3) - 40,
-    ly: y(3) - 30,
-    anchor: "end",
-  },
+  across(COL[0]! + W, COL[1]!, 72, "HTTPS"),
+  across(COL[1]! + W, fnLeft, 72, "/api/*"),
+  across(fnRight, COL[3]!, 72, "data"),
+  across(fnRight, COL[3]!, 172, "secrets"),
+  across(fnRight, COL[3]!, 272, "alerts"),
+  across(fnRight, COL[3]!, 372, "GET"),
+  across(COL[1]! + W, fnLeft, 232, "5 min"),
+  across(COL[1]! + W, fnLeft, 332, "daily"),
+  { d: `M${fnLeft + W / 2},404 L${fnLeft + W / 2},438`, label: "logs", lx: fnLeft + W / 2 + 7, ly: 425, anchor: "start" },
 ];
 
 export function ArchitectureDiagram() {
   return (
     <div className="overflow-x-auto">
       <svg
-        viewBox="0 0 970 540"
-        className="min-w-[760px] w-full"
+        viewBox="0 0 815 530"
+        className="min-w-[680px] w-full"
         role="img"
-        aria-label="CloudPulse architecture: browser to CloudFront, API Gateway and Lambda; EventBridge Scheduler runs the checker Lambda, which writes to DynamoDB and alerts through SNS."
+        aria-label="CloudPulse architecture: the browser reaches Vercel's CDN, which serves the site and forwards /api calls to one Vercel Function. The function stores data in Upstash Redis, reads secrets from environment variables, checks websites and posts alerts to Discord. GitHub Actions calls it every 5 minutes, Vercel Cron once a day."
       >
         <defs>
           <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -115,9 +99,9 @@ export function ArchitectureDiagram() {
         </defs>
 
         {/* Build & deploy region */}
-        <rect x={8} y={272} width={174} height={260} rx={14} fill="none" stroke="var(--axis)" strokeDasharray="5 5" />
-        <text x={95} y={520} textAnchor="middle" fontSize={11} fill="var(--muted)">
-          deploys & tests everything
+        <rect x={8} y={318} width={174} height={204} rx={14} fill="none" stroke="var(--axis)" strokeDasharray="5 5" />
+        <text x={95} y={514} textAnchor="middle" fontSize={11} fill="var(--muted)">
+          builds, tests & deploys
         </text>
 
         {EDGES.map((edge, i) => (
@@ -131,29 +115,33 @@ export function ArchitectureDiagram() {
 
         {NODES.map((node) => {
           const group = GROUPS[node.group];
-          const nx = x(node.col);
-          const ny = y(node.row);
+          const h = node.h ?? H;
           return (
             <g key={node.n}>
               <rect
-                x={nx}
-                y={ny}
+                x={node.x}
+                y={node.y}
                 width={W}
-                height={H}
+                height={h}
                 rx={10}
                 fill="var(--surface)"
                 stroke={group.dashed ? "var(--axis)" : "var(--border)"}
                 strokeDasharray={group.dashed ? "4 4" : undefined}
               />
-              {!group.dashed && <rect x={nx} y={ny + 10} width={4} height={H - 20} rx={2} fill={group.color} />}
-              <text x={nx + 14} y={ny + 27} fontSize={13} fontWeight={600} fill="var(--ink)">
+              {!group.dashed && <rect x={node.x} y={node.y + 10} width={4} height={h - 20} rx={2} fill={group.color} />}
+              <text x={node.x + 14} y={node.y + 27} fontSize={13} fontWeight={600} fill="var(--ink)">
                 {node.title}
               </text>
-              <text x={nx + 14} y={ny + 46} fontSize={11} fill="var(--muted)">
+              <text x={node.x + 14} y={node.y + 46} fontSize={11} fill="var(--muted)">
                 {node.sub}
               </text>
-              <circle cx={nx + W - 14} cy={ny + 14} r={9} fill="var(--surface-2)" />
-              <text x={nx + W - 14} y={ny + 18} fontSize={10} fontWeight={600} textAnchor="middle" fill="var(--ink-2)">
+              {node.lines?.map((line, i) => (
+                <text key={line} x={node.x + 14} y={node.y + 92 + i * 26} fontSize={11} fill="var(--ink-2)">
+                  • {line}
+                </text>
+              ))}
+              <circle cx={node.x + W - 14} cy={node.y + 14} r={9} fill="var(--surface-2)" />
+              <text x={node.x + W - 14} y={node.y + 18} fontSize={10} fontWeight={600} textAnchor="middle" fill="var(--ink-2)">
                 {node.n}
               </text>
             </g>

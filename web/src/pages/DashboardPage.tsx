@@ -2,15 +2,15 @@
  * Admin dashboard: summary tiles, the monitors table, "Run check now", and the add-monitor form.
  * Stats come pre-computed from the checker (stored on each monitor), so this page is one cheap query.
  */
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router";
-import type { Monitor, RunSummary } from "../../../shared/types.ts";
-import { formatLatency, formatUptime } from "../../../shared/format.ts";
-import { Sparkline } from "../components/Sparkline.tsx";
-import { StatTile } from "../components/StatTile.tsx";
-import { StatusBadge } from "../components/StatusBadge.tsx";
-import { ApiError, request, useApi } from "../lib/api.ts";
-import { formatDateTime, timeAgo } from "../lib/time.ts";
+import type { Monitor, RunSummary } from "../../../shared/types.js";
+import { formatLatency, formatUptime } from "../../../shared/format.js";
+import { Sparkline } from "../components/Sparkline.js";
+import { StatTile } from "../components/StatTile.js";
+import { StatusBadge } from "../components/StatusBadge.js";
+import { ApiError, request, useApi } from "../lib/api.js";
+import { formatDateTime, timeAgo } from "../lib/time.js";
 
 function mean(values: (number | null | undefined)[]): number | null {
   const nums = values.filter((v): v is number => typeof v === "number");
@@ -153,8 +153,85 @@ export function DashboardPage() {
         </table>
       </div>
 
-      <AddMonitorForm onAdded={reload} />
+      <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
+        <AddMonitorForm onAdded={reload} />
+        <OutageSimulator monitors={monitors} onChange={reload} />
+      </div>
     </div>
+  );
+}
+
+/**
+ * Outage simulator for live demos. /api/demo-target is a fake website inside CloudPulse that
+ * returns HTTP 503 while it is switched "down". Monitor it, take it down, run checks twice:
+ * an incident opens and an alert is sent. Bring it back and run checks: the incident closes.
+ */
+function OutageSimulator({ monitors, onChange }: { monitors: Monitor[]; onChange: () => void }) {
+  const targetUrl = `${window.location.origin}/api/demo-target`;
+  const watched = monitors.some((m) => m.url === targetUrl);
+  const [down, setDown] = useState<boolean | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/demo-target", { cache: "no-store" })
+      .then((response) => setDown(response.status === 503))
+      .catch(() => setDown(null));
+  }, []);
+
+  async function addDemoMonitor() {
+    try {
+      await request("/api/monitors", { method: "POST", body: JSON.stringify({ name: "Demo target", url: targetUrl }) });
+      setMessage("Demo monitor added.");
+      onChange();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not add the demo monitor");
+    }
+  }
+
+  async function switchTo(nextDown: boolean) {
+    try {
+      await request("/api/demo-target", { method: "POST", body: JSON.stringify({ down: nextDown }) });
+      setDown(nextDown);
+      setMessage(
+        nextDown
+          ? 'The demo site now returns HTTP 503. Click "Run check now" twice to open an incident.'
+          : 'The demo site is back (HTTP 200). Click "Run check now" to close the incident.',
+      );
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not switch the demo site");
+    }
+  }
+
+  const button = "rounded-lg border border-line px-3 py-1.5 text-sm text-ink hover:bg-surface-2 disabled:opacity-50";
+  return (
+    <section className="rounded-xl border border-line bg-surface p-5">
+      <div className="flex items-center gap-2">
+        <h2 className="font-semibold text-ink">Outage simulator</h2>
+        {down !== null && (
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-0.5 text-xs text-ink">
+            <span aria-hidden className={down ? "text-critical" : "text-good"}>
+              {down ? "▲" : "●"}
+            </span>
+            {down ? "Demo site down" : "Demo site up"}
+          </span>
+        )}
+      </div>
+      <p className="mt-2 text-sm text-ink-2">A fake website you control, for showing an outage and recovery live.</p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {!watched && (
+          <button type="button" className={button} onClick={addDemoMonitor}>
+            Monitor it
+          </button>
+        )}
+        <button type="button" className={button} disabled={down === true} onClick={() => switchTo(true)}>
+          Take it down
+        </button>
+        <button type="button" className={button} disabled={down === false} onClick={() => switchTo(false)}>
+          Bring it back
+        </button>
+      </div>
+      {message && <p className="mt-3 text-sm text-ink-2">{message}</p>}
+    </section>
   );
 }
 

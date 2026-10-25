@@ -3,9 +3,9 @@
  * uptime, grey when there is no data. Hovering a bar shows the date and exact percentage.
  */
 import { useState } from "react";
-import type { StatusPageDay } from "../../../shared/types.ts";
-import { formatUptime } from "../../../shared/format.ts";
-import { formatDay } from "../lib/time.ts";
+import type { StatusPageDay } from "../../../shared/types.js";
+import { formatUptime } from "../../../shared/format.js";
+import { formatDay } from "../lib/time.js";
 
 function barClass(uptime: number | null): string {
   if (uptime === null) return "bg-nodata";

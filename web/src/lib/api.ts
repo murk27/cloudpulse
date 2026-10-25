@@ -1,8 +1,8 @@
 /**
  * Tiny client for the CloudPulse API.
  *
- * All requests go to the same origin (/api/...): in AWS, CloudFront forwards /api/* to
- * API Gateway; locally, Vite's dev server proxies /api to scripts/local-server.ts.
+ * All requests go to the same origin (/api/...): on Vercel, a rewrite sends /api/* to the
+ * Vercel Function; locally, Vite's dev server proxies /api to scripts/local-server.ts.
  * Same origin means no CORS configuration is needed anywhere.
  */
 import { useCallback, useEffect, useState } from "react";
@@ -53,7 +53,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   if (init.body) headers.set("content-type", "application/json");
 
   const started = performance.now();
-  // "no-cache" = always ask the network (CloudFront may still answer from its edge cache).
+  // "no-cache" = always ask the network (the CDN may still answer from its edge cache).
   const response = await fetch(path, { cache: "no-cache", ...init, headers });
   const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   const durationMs = Math.round(performance.now() - started);
@@ -66,7 +66,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     }
     const message =
       response.status === 429
-        ? "Too many requests: API Gateway throttled this call. Wait a moment and try again."
+        ? "Too many requests: the rate limit is 10 per 10 seconds per IP. Wait a moment and try again."
         : String(body.error ?? `Request failed (${response.status})`);
     throw new ApiError(response.status, message, body.details as string[] | undefined);
   }

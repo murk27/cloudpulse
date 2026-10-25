@@ -2,7 +2,7 @@
  * Up / Down / Pending pill. Colour is never the only signal: each state also has its own
  * icon shape and a text label, so it reads correctly for colour-blind users and in print.
  */
-import type { MonitorStatus } from "../../../shared/types.ts";
+import type { MonitorStatus } from "../../../shared/types.js";
 
 const STYLES: Record<MonitorStatus, { label: string; icon: string; color: string }> = {
   up: { label: "Up", icon: "●", color: "text-good" },

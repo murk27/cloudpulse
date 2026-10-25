@@ -4,14 +4,14 @@
  */
 import { useState, type ReactNode } from "react";
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router";
-import { getToken, setToken } from "./lib/api.ts";
-import { applyThemeChoice, getThemeChoice, nextTheme, type ThemeChoice } from "./lib/theme.ts";
-import { ArchitecturePage } from "./pages/ArchitecturePage.tsx";
-import { DashboardPage } from "./pages/DashboardPage.tsx";
-import { HomePage } from "./pages/HomePage.tsx";
-import { LoginPage } from "./pages/LoginPage.tsx";
-import { MonitorPage } from "./pages/MonitorPage.tsx";
-import { StatusPage } from "./pages/StatusPage.tsx";
+import { getToken, setToken } from "./lib/api.js";
+import { applyThemeChoice, getThemeChoice, nextTheme, type ThemeChoice } from "./lib/theme.js";
+import { ArchitecturePage } from "./pages/ArchitecturePage.js";
+import { DashboardPage } from "./pages/DashboardPage.js";
+import { HomePage } from "./pages/HomePage.js";
+import { LoginPage } from "./pages/LoginPage.js";
+import { MonitorPage } from "./pages/MonitorPage.js";
+import { StatusPage } from "./pages/StatusPage.js";
 
 function RequireLogin({ children }: { children: ReactNode }) {
   const location = useLocation();
@@ -116,7 +116,7 @@ export function App() {
 
       <footer className="border-t border-line">
         <div className="mx-auto max-w-6xl px-4 py-4 text-xs text-muted">
-          CloudPulse · serverless uptime monitoring on AWS (Lambda, DynamoDB, EventBridge, SNS, S3, CloudFront) ·{" "}
+          CloudPulse · serverless uptime monitoring on Vercel (Functions, CDN, Cron) with Upstash Redis and GitHub Actions ·{" "}
           <Link to="/architecture" className="underline hover:text-ink">
             how it works
           </Link>

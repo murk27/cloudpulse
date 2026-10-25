@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSessionToken, safeEqual, verifySessionToken } from "../lib/auth.ts";
+import { createSessionToken, safeEqual, verifySessionToken } from "../lib/auth.js";
 
 const NOW = Date.parse("2026-01-01T00:00:00Z");
 

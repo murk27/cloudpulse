@@ -1,6 +1,8 @@
 {
-  // One TypeScript config for the whole repo: Lambda code (backend/),
+  // One TypeScript config for the whole repo: the Vercel Function (api/), backend code (backend/),
   // the React app (web/), shared types (shared/) and scripts (scripts/).
+  // Relative imports use ".js" endings (e.g. "./db.js" for db.ts): that is what Node.js needs
+  // at runtime for ES modules, and Vercel, Vite, tsx and Vitest all map them back to the .ts file.
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
@@ -15,9 +17,8 @@
     "verbatimModuleSyntax": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "resolveJsonModule": true,
-    "allowImportingTsExtensions": true
+    "resolveJsonModule": true
   },
-  "include": ["backend", "web/src", "shared", "scripts", "*.config.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["api", "backend", "web/src", "shared", "scripts", "*.config.ts"],
+  "exclude": ["node_modules", "dist", ".vercel"]
 }

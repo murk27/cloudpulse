@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { CheckResult } from "../../shared/types.ts";
-import { formatDuration } from "../../shared/format.ts";
-import { overallStatus } from "../handlers/api.ts";
-import { buildUptimeBars, computeStats, percentile } from "../lib/stats.ts";
+import type { CheckResult } from "../../shared/types.js";
+import { formatDuration } from "../../shared/format.js";
+import { overallStatus } from "../app.js";
+import { buildUptimeBars, computeStats, percentile } from "../lib/stats.js";
 
 const NOW = new Date("2026-01-02T12:00:00.000Z");
 

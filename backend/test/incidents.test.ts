@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateCheck } from "../lib/incidents.ts";
+import { evaluateCheck } from "../lib/incidents.js";
 
 const T1 = "2026-01-01T10:00:00.000Z";
 const T2 = "2026-01-01T10:05:00.000Z";

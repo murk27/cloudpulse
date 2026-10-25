@@ -1,6 +1,6 @@
-# Continuous Integration: every push and pull request is linted, type-checked, tested and built,
-# and the AWS template is validated. Nothing is deployed from here: deploying needs AWS
-# credentials, which we keep on the developer's machine (see README -> "What I'd do next").
+# Continuous Integration: every push and pull request is linted, type-checked, tested and built.
+# Deployment (CD) is done by Vercel's Git integration: every push to main deploys to production,
+# and every other branch / pull request gets its own preview URL.
 name: CI
 
 on:
@@ -33,8 +33,5 @@ jobs:
       - name: Unit + integration tests
         run: npm test
 
-      - name: Build website and Lambda bundles
+      - name: Build the website
         run: npm run build
-
-      - name: Validate the SAM / CloudFormation template
-        run: pipx run cfn-lint template.yaml

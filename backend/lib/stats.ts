@@ -3,7 +3,7 @@
  * The checker calls computeStats() after every run and stores the result on the monitor,
  * so the dashboard reads ready-made numbers instead of re-reading 24h of checks each time.
  */
-import type { CheckResult, DayRollup, MonitorStats, StatusPageDay } from "../../shared/types.ts";
+import type { CheckResult, DayRollup, MonitorStats, StatusPageDay } from "../../shared/types.js";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
