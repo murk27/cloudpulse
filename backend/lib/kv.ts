@@ -35,6 +35,19 @@ export interface KV {
   zremrangeByScore(key: string, min: number, max: number): Promise<number>;
 }
 
+/**
+ * With automaticDeserialization turned off, the Upstash SDK returns HGETALL as the raw flat
+ * array [field1, value1, field2, value2, ...] instead of an object. Turn it into a record
+ * (and accept an object too, so this keeps working if the SDK's behaviour changes).
+ */
+function hashToRecord(raw: unknown): Record<string, string> {
+  if (!raw) return {};
+  if (!Array.isArray(raw)) return raw as Record<string, string>;
+  const record: Record<string, string> = {};
+  for (let i = 0; i + 1 < raw.length; i += 2) record[String(raw[i])] = String(raw[i + 1]);
+  return record;
+}
+
 /** Adapter from the Upstash SDK to our interface. */
 function upstashKV(redis: Redis): KV {
   return {
@@ -44,7 +57,7 @@ function upstashKV(redis: Redis): KV {
     del: (...keys) => (keys.length ? redis.del(...keys) : Promise.resolve(0)),
     mget: (keys) => (keys.length ? redis.mget<(string | null)[]>(...keys) : Promise.resolve([])),
     hget: (key, field) => redis.hget<string>(key, field),
-    hgetall: async (key) => (await redis.hgetall<Record<string, string>>(key)) ?? {},
+    hgetall: async (key) => hashToRecord(await redis.hgetall<Record<string, unknown>>(key)),
     hset: async (key, values) => {
       if (Object.keys(values).length) await redis.hset(key, values);
     },
